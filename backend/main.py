@@ -1,6 +1,14 @@
-def main():
-    print("Hello from ai-career-coach!")
+from fastapi import FastAPI
+
+app = FastAPI(title="AI Career Coach API")
 
 
-if __name__ == "__main__":
-    main()
+@app.get("/")
+def read_root():
+    return {"message": "AI Career Coach API is running"}
+
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
