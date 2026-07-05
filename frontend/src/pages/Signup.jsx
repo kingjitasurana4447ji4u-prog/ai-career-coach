@@ -1,4 +1,4 @@
-import { useState } from "react";
+﻿import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 function Signup() {
@@ -11,8 +11,9 @@ function Signup() {
     e.preventDefault();
     setError("");
     try {
-      const res = await fetch("http://localhost:8000/register", {
+      const res = await fetch("https://ai-career-coach-djum.onrender.com/register", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
@@ -20,8 +21,6 @@ function Signup() {
         const data = await res.json();
         throw new Error(data.detail || "Signup failed");
       }
-      const data = await res.json();
-      localStorage.setItem("token", data.access_token);
       navigate("/chat");
     } catch (err) {
       setError(err.message);
