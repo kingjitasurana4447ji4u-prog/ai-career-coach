@@ -1,5 +1,102 @@
-﻿import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate, Link } from "react-router-dom";
+
+const API_URL = import.meta.env.VITE_API_URL;
+
+function ParticleBackground() {
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    let animationId;
+    let particles = [];
+
+    const DENSITY = 9000; // px^2 per particle
+    const MAX_LINK_DIST = 130;
+    const COLORS = ["#D20A0A", "#EB1B23", "#F5F5F5"];
+
+    const resize = () => {
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+      const count = Math.max(24, Math.floor((canvas.width * canvas.height) / DENSITY));
+      particles = Array.from({ length: count }, () => ({
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
+        vx: (Math.random() - 0.5) * 0.25,
+        vy: (Math.random() - 0.5) * 0.25,
+        r: Math.random() * 1.6 + 0.6,
+        color: COLORS[Math.floor(Math.random() * COLORS.length)],
+        alpha: Math.random() * 0.5 + 0.3,
+      }));
+    };
+
+    const step = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+
+        if (p.x < 0 || p.x > canvas.width) p.vx *= -1;
+        if (p.y < 0 || p.y > canvas.height) p.vy *= -1;
+
+        for (let j = i + 1; j < particles.length; j++) {
+          const q = particles[j];
+          const dx = p.x - q.x;
+          const dy = p.y - q.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < MAX_LINK_DIST) {
+            ctx.strokeStyle = `rgba(210,10,10,${0.16 * (1 - dist / MAX_LINK_DIST)})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(q.x, q.y);
+            ctx.stroke();
+          }
+        }
+      }
+
+      for (const p of particles) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = p.alpha;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+
+      animationId = requestAnimationFrame(step);
+    };
+
+    resize();
+    step();
+    window.addEventListener("resize", resize);
+
+    return () => {
+      cancelAnimationFrame(animationId);
+      window.removeEventListener("resize", resize);
+    };
+  }, []);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{
+        position: "absolute",
+        inset: 0,
+        width: "100%",
+        height: "100%",
+        zIndex: 0,
+        pointerEvents: "none",
+        opacity: 1,
+        display: "block",
+        background: "transparent",
+      }}
+    />
+  );
+}
 
 function Resume() {
   const [resumes, setResumes] = useState([]);
@@ -7,11 +104,13 @@ function Resume() {
   const [analyzing, setAnalyzing] = useState(false);
   const [selectedResume, setSelectedResume] = useState(null);
   const [error, setError] = useState("");
+  const [glowActive, setGlowActive] = useState(false);
   const fileInputRef = useRef(null);
   const navigate = useNavigate();
 
   const handleAuthFail = (res) => {
     if (res.status === 401) {
+      localStorage.removeItem("active_conversation_id");
       navigate("/login");
       return true;
     }
@@ -20,7 +119,7 @@ function Resume() {
 
   const fetchResumes = async () => {
     try {
-      const res = await fetch("https://ai-career-coach-djum.onrender.com/resume", {
+      const res = await fetch(`${API_URL}/resume`, {
         credentials: "include",
       });
       if (handleAuthFail(res)) return;
@@ -55,7 +154,7 @@ function Resume() {
     formData.append("file", file);
 
     try {
-      const res = await fetch("https://ai-career-coach-djum.onrender.com/resume/analyze", {
+      const res = await fetch(`${API_URL}/resume/analyze`, {
         method: "POST",
         credentials: "include",
         body: formData,
@@ -81,7 +180,7 @@ function Resume() {
 
   const loadResume = async (id) => {
     try {
-      const res = await fetch(`https://ai-career-coach-djum.onrender.com/resume/${id}`, {
+      const res = await fetch(`${API_URL}/resume/${id}`, {
         credentials: "include",
       });
       if (handleAuthFail(res)) return;
@@ -121,53 +220,101 @@ function Resume() {
     page: {
       display: "flex",
       height: "100vh",
-      background: "#10151A",
+      background:
+        "radial-gradient(ellipse 1200px 600px at 50% -10%, #1A0808 0%, #0A0A0A 45%), #0A0A0A",
       fontFamily: "'Inter', sans-serif",
+      WebkitFontSmoothing: "antialiased",
+      position: "relative",
+      overflow: "hidden",
+      isolation: "isolate",
     },
     sidebar: {
-      width: 270,
-      background: "#0B0F13",
-      color: "#E8E6E1",
+      width: 272,
+      background: "rgba(10, 10, 10, 0.12)",
+      color: "#F5F5F5",
       display: "flex",
       flexDirection: "column",
-      borderRight: "1px solid #1E2530",
+      borderRight: glowActive ? "2px solid rgba(255,255,255,0.42)" : "1px solid rgba(255,255,255,0.14)",
+      boxShadow: glowActive
+        ? "0 0 0 1px rgba(255,255,255,0.12), 0 0 22px rgba(255,255,255,0.26), 0 0 48px rgba(210,10,10,0.32), 0 20px 50px rgba(0,0,0,0.35)"
+        : "0 20px 50px rgba(0,0,0,0.35)",
+      zIndex: 2,
+      position: "relative",
+      backdropFilter: "blur(4px)",
+      transition: "border-color 0.2s ease, box-shadow 0.2s ease",
     },
     logo: {
-      padding: "22px 20px",
-      fontFamily: "'Fraunces', serif",
-      fontSize: 20,
-      fontWeight: 600,
-      color: "#F3EFE9",
-      borderBottom: "1px solid #1E2530",
+      padding: "26px 22px",
+      fontFamily: "'Oswald', 'Inter', sans-serif",
+      fontSize: 22,
+      fontWeight: 700,
+      fontStyle: "italic",
+      color: "#F5F5F5",
+      borderBottom: "1px solid rgba(255,255,255,0.14)",
+      borderTop: "3px solid rgba(245,245,245,0.22)",
+      display: "flex",
+      alignItems: "center",
+      gap: 12,
+      letterSpacing: 0.8,
+      textTransform: "uppercase",
+      position: "relative",
+      textShadow: "0 0 10px rgba(255,255,255,0.2), 0 0 20px rgba(210,10,10,0.16)",
+    },
+    logoDot: {
+      width: 14,
+      height: 14,
+      background: "#D20A0A",
+      clipPath:
+        "polygon(30% 0%, 70% 0%, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0% 70%, 0% 30%)",
+      boxShadow: "0 0 14px rgba(210,10,10,0.8)",
+      flexShrink: 0,
     },
     navRow: {
       display: "flex",
       flexWrap: "wrap",
       gap: 8,
-      padding: "14px 16px",
+      padding: "16px 16px 14px",
     },
     navLink: (active) => ({
       flex: "1 1 40%",
       textAlign: "center",
-      padding: "8px 10px",
-      borderRadius: 8,
-      fontSize: 13,
-      textDecoration: "none",
-      color: active ? "#10151A" : "#8B93A1",
-      background: active ? "#E8A758" : "#171E27",
+      padding: "9px 10px",
+      borderRadius: 6,
+      fontFamily: "'Oswald', 'Inter', sans-serif",
+      fontSize: 12.5,
       fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: 1,
+      textDecoration: "none",
+      display: "block",
+      color: active ? "#F5F5F5" : "#8A8A8A",
+      background: active ? "linear-gradient(135deg, #D20A0A 0%, #A00808 100%)" : "#161616",
+      border: active ? "1px solid rgba(255,255,255,0.35)" : "1px solid rgba(255,255,255,0.16)",
+      boxShadow: active
+        ? "0 0 0 1px rgba(255,255,255,0.08), 0 0 12px rgba(255,255,255,0.16), 0 0 24px rgba(210,10,10,0.38)"
+        : "0 0 0 1px rgba(255,255,255,0.05), 0 0 8px rgba(255,255,255,0.08), 0 0 16px rgba(210,10,10,0.2)",
+      transition: "all 0.18s ease",
+      textShadow: active
+        ? "0 0 10px rgba(255,255,255,0.24), 0 0 16px rgba(210,10,10,0.2)"
+        : "0 0 7px rgba(255,255,255,0.14), 0 0 12px rgba(210,10,10,0.16)",
     }),
     uploadBtn: {
-      margin: "6px 16px 14px 16px",
-      padding: "11px 14px",
-      background: "linear-gradient(135deg, #E8A758, #D98A3D)",
-      color: "#10151A",
-      border: "none",
-      borderRadius: 10,
+      margin: "4px 16px 16px 16px",
+      padding: "12px 14px",
+      background: "linear-gradient(135deg, #D20A0A 0%, #A00808 100%)",
+      color: "#F5F5F5",
+      border: "1px solid rgba(255,255,255,0.28)",
+      borderRadius: 6,
       cursor: "pointer",
       textAlign: "left",
+      fontFamily: "'Oswald', 'Inter', sans-serif",
       fontWeight: 600,
-      fontSize: 14,
+      fontSize: 13.5,
+      letterSpacing: 1,
+      textTransform: "uppercase",
+      boxShadow: "0 0 0 1px rgba(255,255,255,0.08), 0 0 12px rgba(255,255,255,0.16), 0 0 24px rgba(210,10,10,0.35)",
+      transition: "transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease",
+      textShadow: "0 0 10px rgba(255,255,255,0.24), 0 0 16px rgba(210,10,10,0.2)",
     },
     convoList: {
       flex: 1,
@@ -177,56 +324,82 @@ function Resume() {
     convoItem: (active) => ({
       padding: "11px 12px",
       marginBottom: 3,
-      borderRadius: 8,
+      borderRadius: 6,
       cursor: "pointer",
       fontSize: 13.5,
-      color: active ? "#F3EFE9" : "#8B93A1",
-      background: active ? "#171E27" : "transparent",
-      borderLeft: active ? "3px solid #E8A758" : "3px solid transparent",
+      fontWeight: active ? 500 : 400,
+      letterSpacing: 0.1,
+      color: active ? "#F5F5F5" : "#9A9A9A",
+      background: active ? "rgba(22, 22, 22, 0.74)" : "transparent",
+      borderLeft: active ? "3px solid #D20A0A" : "3px solid transparent",
       overflow: "hidden",
       textOverflow: "ellipsis",
       whiteSpace: "nowrap",
+      transition: "all 0.15s ease",
+      textShadow: active ? "0 0 8px rgba(255,255,255,0.16)" : "0 0 6px rgba(255,255,255,0.12)",
     }),
     main: {
       flex: 1,
       display: "flex",
       flexDirection: "column",
-      background: "#151B22",
+      background: "rgba(8, 8, 8, 0.06)",
       padding: "40px 12%",
       overflowY: "auto",
+      position: "relative",
+      zIndex: 1,
+      backdropFilter: "blur(4px)",
+      borderLeft: glowActive ? "2px solid rgba(255,255,255,0.42)" : "1px solid rgba(255,255,255,0.14)",
+      boxShadow: glowActive
+        ? "0 0 0 1px rgba(255,255,255,0.12), 0 0 22px rgba(255,255,255,0.26), 0 0 48px rgba(210,10,10,0.32), 0 20px 50px rgba(0,0,0,0.35)"
+        : "0 20px 50px rgba(0,0,0,0.35)",
+      transition: "border-color 0.2s ease, box-shadow 0.2s ease",
     },
     emptyState: {
-      color: "#5C6675",
+      color: "#8A8A8A",
       textAlign: "center",
       marginTop: 120,
       fontSize: 15,
-      fontFamily: "'Fraunces', serif",
+      lineHeight: 1.6,
+      fontFamily: "'Inter', sans-serif",
     },
     analyzingState: {
-      color: "#E8A758",
+      color: "#D20A0A",
       textAlign: "center",
       marginTop: 120,
       fontSize: 15,
+      fontFamily: "'Oswald', 'Inter', sans-serif",
+      fontWeight: 600,
+      letterSpacing: 1,
+      textTransform: "uppercase",
     },
     resultBox: {
-      background: "#1E2530",
-      borderRadius: 14,
-      padding: "28px 32px",
-      color: "#E8E6E1",
+      background: "rgba(22, 22, 22, 0.74)",
+      borderRadius: 8,
+      padding: "30px 34px",
+      color: "#F5F5F5",
       lineHeight: 1.6,
+      border: "1px solid rgba(255,255,255,0.16)",
+      borderTop: "3px solid rgba(245,245,245,0.22)",
+      boxShadow: "0 0 0 1px rgba(255,255,255,0.06), 0 0 10px rgba(255,255,255,0.1), 0 0 22px rgba(210,10,10,0.2)",
+      transition: "transform 0.2s ease, box-shadow 0.25s ease, border-color 0.25s ease",
     },
     filename: {
-      fontFamily: "'Fraunces', serif",
+      fontFamily: "'Oswald', 'Inter', sans-serif",
       fontSize: 20,
-      marginBottom: 20,
-      color: "#F3EFE9",
+      fontWeight: 700,
+      marginBottom: 22,
+      color: "#F5F5F5",
+      letterSpacing: 0.4,
     },
     sectionHeading: {
-      fontFamily: "'Fraunces', serif",
-      color: "#E8A758",
-      fontSize: 17,
-      marginTop: 20,
-      marginBottom: 8,
+      fontFamily: "'Oswald', 'Inter', sans-serif",
+      color: "#D20A0A",
+      fontSize: 15,
+      fontWeight: 700,
+      marginTop: 22,
+      marginBottom: 10,
+      textTransform: "uppercase",
+      letterSpacing: 1,
     },
     bulletItem: {
       marginLeft: 20,
@@ -238,39 +411,75 @@ function Resume() {
       marginBottom: 6,
     },
     errorBox: {
-      background: "#2A1B1B",
-      color: "#E8927D",
-      padding: "12px 16px",
-      borderRadius: 8,
+      background: "#1D0E0E",
+      color: "#EB1B23",
+      padding: "13px 17px",
+      borderRadius: 6,
       marginBottom: 16,
       fontSize: 14,
+      border: "1px solid #3A1414",
     },
   };
 
   return (
-    <div style={styles.page}>
-      <div style={styles.sidebar}>
-        <div style={styles.logo}>AI Career Coach</div>
+    <div
+      style={styles.page}
+      onMouseEnter={() => setGlowActive(true)}
+      onMouseMove={() => setGlowActive(true)}
+      onMouseLeave={() => setGlowActive(false)}
+    >
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&display=swap');
+        .cc-r-navlink:hover { border-color: #EB1B23 !important; transform: translateY(-1px); box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 0 14px rgba(255,255,255,0.18), 0 0 30px rgba(210,10,10,0.4) !important; text-shadow: 0 0 10px rgba(255,255,255,0.24), 0 0 16px rgba(210,10,10,0.22) !important; }
+        .cc-r-navlink:focus-visible { outline: 2px solid #EB1B23; outline-offset: 2px; }
+        .cc-r-convo:hover { background: rgba(22, 22, 22, 0.74) !important; color: #F5F5F5 !important; text-shadow: 0 0 8px rgba(255,255,255,0.2) !important; }
+        .cc-r-upload:hover:not(:disabled) { background: linear-gradient(135deg, #EB1B23 0%, #B30909 100%) !important; transform: translateY(-1px); box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 0 14px rgba(255,255,255,0.18), 0 0 30px rgba(210,10,10,0.4) !important; }
+        .cc-r-upload:focus-visible { outline: 2px solid #EB1B23; outline-offset: 2px; }
+        .cc-r-sidebar, .cc-r-main { transition: box-shadow 0.6s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.6s cubic-bezier(0.22, 1, 0.36, 1); }
+        .cc-r-sidebar:hover { border-color: rgba(255,255,255,0.78) !important; box-shadow: 0 0 65px 12px rgba(255,255,255,0.3), 0 20px 60px rgba(0,0,0,0.6) !important; }
+        .cc-r-main:hover { border-color: rgba(255,255,255,0.78) !important; box-shadow: 0 0 65px 12px rgba(255,255,255,0.3), 0 20px 60px rgba(0,0,0,0.6) !important; }
+        .cc-r-resultbox {
+          transition: border-color 0.4s ease, box-shadow 0.4s ease, transform 0.2s ease;
+        }
+        .cc-r-resultbox:hover {
+          transform: translateY(-1px);
+          border-color: rgba(255,255,255,0.7) !important;
+          box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 0 14px rgba(255,255,255,0.18), 0 0 28px rgba(210,10,10,0.28) !important;
+        }
+        .cc-r-list::-webkit-scrollbar { width: 6px; }
+        .cc-r-list::-webkit-scrollbar-thumb { background: #2A2A2A; border-radius: 2px; }
+        .cc-r-main::-webkit-scrollbar { width: 8px; }
+        .cc-r-main::-webkit-scrollbar-thumb { background: #2A2A2A; border-radius: 2px; }
+      `}</style>
+
+      <ParticleBackground />
+
+      <div className="cc-r-sidebar" style={styles.sidebar}>
+        <div style={styles.logo}>
+          <span style={styles.logoDot} />
+          AI Career Coach
+        </div>
 
         <div style={styles.navRow}>
-          <Link to="/chat" style={styles.navLink(false)}>
+          <Link className="cc-r-navlink" to="/chat" style={styles.navLink(false)}>
             Chat
           </Link>
-          <Link to="/resume" style={styles.navLink(true)}>
+          <Link className="cc-r-navlink" to="/resume" style={styles.navLink(true)}>
             Resume
           </Link>
-          <Link to="/resume-builder" style={styles.navLink(false)}>
+          <Link className="cc-r-navlink" to="/resume-builder" style={styles.navLink(false)}>
             Builder
           </Link>
-          <Link to="/mind-map" style={styles.navLink(false)}>
+          <Link className="cc-r-navlink" to="/mind-map" style={styles.navLink(false)}>
             Mind Map
           </Link>
-          <Link to="/interview" style={styles.navLink(false)}>
+          <Link className="cc-r-navlink" to="/interview" style={styles.navLink(false)}>
             Interview
           </Link>
         </div>
 
         <button
+          className="cc-r-upload"
           style={styles.uploadBtn}
           onClick={() => fileInputRef.current.click()}
           disabled={analyzing}
@@ -285,20 +494,21 @@ function Resume() {
           style={{ display: "none" }}
         />
 
-        <div style={styles.convoList}>
+        <div className="cc-r-list" style={styles.convoList}>
           {loadingList && (
-            <p style={{ color: "#5C6675", fontSize: 13, padding: "0 12px" }}>
+            <p style={{ color: "#8A8A8A", fontSize: 13, padding: "0 12px" }}>
               Loading...
             </p>
           )}
           {!loadingList && resumes.length === 0 && (
-            <p style={{ color: "#5C6675", fontSize: 13, padding: "0 12px" }}>
+            <p style={{ color: "#8A8A8A", fontSize: 13, padding: "0 12px" }}>
               No resumes uploaded yet
             </p>
           )}
           {resumes.map((r) => (
             <div
               key={r.id}
+              className="cc-r-convo"
               onClick={() => loadResume(r.id)}
               style={styles.convoItem(selectedResume?.id === r.id)}
             >
@@ -308,7 +518,7 @@ function Resume() {
         </div>
       </div>
 
-      <div style={styles.main}>
+      <div className="cc-r-main" style={styles.main}>
         {error && <div style={styles.errorBox}>{error}</div>}
 
         {analyzing && (
@@ -323,7 +533,7 @@ function Resume() {
         )}
 
         {!analyzing && selectedResume && (
-          <div style={styles.resultBox}>
+          <div className="cc-r-resultbox" style={styles.resultBox}>
             <div style={styles.filename}>{selectedResume.filename}</div>
             {formatAnalysis(selectedResume.analysis)}
           </div>

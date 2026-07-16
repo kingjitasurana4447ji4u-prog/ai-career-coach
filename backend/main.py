@@ -27,6 +27,8 @@ from schemas import (
     MindMapCreateRequest, MindMapOut, MindMapListItem,
     InterviewStartResponse, TranscriptEntry, InterviewAnswerResponse,
     InterviewOut, InterviewListItem, InterviewFinishResponse,
+    PracticeStartRequest, PracticeSubmitResponse, QAsubmitResponse,
+    QAfinishResponse, AssistantChatResponse, AssistantFinishResponse,
 )
 from auth import hash_password, verify_password, create_access_token, get_current_user
 
@@ -119,6 +121,53 @@ INTERVIEW_SCORE_PROMPT = (
     "(transcribed from audio, so minor transcription errors may exist). Give an overall "
     "score out of 10 and constructive written feedback covering: what the candidate did "
     "well, specific areas to improve, and one or two concrete tips for next time.\n\n"
+    "Return ONLY valid JSON (no markdown, no code fences, no explanation) matching exactly "
+    "this structure:\n"
+    '{"score": "X/10", "feedback": "multi-paragraph feedback string"}\n\n'
+    "Interview transcript:\n"
+)
+
+LIVE_QA_PROMPT = (
+    "You are a helpful, encouraging AI career coach conducting a live voice conversation. "
+    "The user has asked you a career-related question. Answer the question in a warm, "
+    "conversational tone, as if speaking. Keep your response relatively concise (2-4 sentences) "
+    "so that it is comfortable to listen to when read aloud."
+)
+
+QA_SUMMARY_PROMPT = (
+    "You are a career coach summarizing a voice Q&A session with a user. Based on the "
+    "conversation history below, provide a brief, professional summary of the discussion. "
+    "Highlight any major advice given and suggest 1-2 constructive next steps for the user."
+)
+
+PRACTICE_RATING_PROMPT = (
+    "You are an expert interviewer. Evaluate the candidate's answer to the interview question.\n\n"
+    "Question: {question}\n"
+    "Candidate Answer: {answer}\n\n"
+    "Provide a rating score out of 10 (e.g. '8.5/10') and a detailed constructive feedback paragraph "
+    "detailing what they did well, what could be improved, and a concrete tip. "
+    "Return ONLY a valid JSON object matching exactly this structure:\n"
+    '{{"score": "X/10", "feedback": "feedback text here"}}'
+)
+
+ASSISTANT_SYSTEM_PROMPT = (
+    "You are an expert AI mock interviewer conducting a live, hands-free voice interview. "
+    "You are speaking directly to the candidate in real-time. "
+    "The conversation history is provided below — use it to ask progressively deeper follow-up questions. "
+    "DO NOT repeat questions already asked. "
+    "Keep your responses SHORT (1-3 sentences max) so they feel natural when spoken aloud. "
+    "Start by greeting the candidate and asking your first interview question. "
+    "After each candidate answer, briefly acknowledge it, then ask the next follow-up question. "
+    "Mix behavioral, technical, and situational questions based on the conversation flow. "
+    "Be warm but professional, like a real interviewer."
+)
+
+ASSISTANT_EVAL_PROMPT = (
+    "You are an expert career coach evaluating a completed live voice mock interview. "
+    "Below is the full conversational transcript between the AI interviewer and the candidate. "
+    "Provide an overall score out of 10 and detailed constructive feedback. "
+    "Cover: communication skills, depth of answers, confidence level, areas of strength, "
+    "specific areas to improve, and 2-3 concrete actionable tips.\n\n"
     "Return ONLY valid JSON (no markdown, no code fences, no explanation) matching exactly "
     "this structure:\n"
     '{"score": "X/10", "feedback": "multi-paragraph feedback string"}\n\n'
@@ -723,3 +772,373 @@ async def delete_interview(
     await db.delete(session)
     await db.commit()
     return {"message": "Interview session deleted"}
+
+
+@app.post("/interview/start-qa")
+async def start_qa(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    session = InterviewSession(
+        user_id=current_user.id,
+        questions=json.dumps(["Career Coach Voice Q&A"]),
+        transcript="[]",
+        status="in_progress",
+    )
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+    return {"id": session.id}
+
+
+@app.post("/interview/{interview_id}/qa-ask", response_model=QAsubmitResponse)
+@limiter.limit("10/minute")
+async def qa_ask(
+    request: Request,
+    interview_id: int,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(InterviewSession).where(
+            InterviewSession.id == interview_id,
+            InterviewSession.user_id == current_user.id,
+        )
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.status == "completed":
+        raise HTTPException(status_code=400, detail="This session is already completed")
+
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="No audio data received")
+    mime_type = file.content_type or "audio/webm"
+
+    # Transcribe user's audio question using Gemini
+    response_transcribe = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[
+            types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+            TRANSCRIBE_PROMPT,
+        ],
+    )
+    user_question = response_transcribe.text.strip() if response_transcribe.text else ""
+    if not user_question:
+        raise HTTPException(status_code=400, detail="Could not transcribe audio. Please speak clearly.")
+
+    # Read conversation history
+    transcript = json.loads(session.transcript)
+    history_text = "\n".join(
+        f"User: {t['question']}\nCoach: {t['answer']}" for t in transcript
+    )
+
+    prompt = f"{LIVE_QA_PROMPT}\n\nHistory:\n{history_text}\n\nUser Question: {user_question}\nCoach:"
+
+    response_ai = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+    )
+    coach_reply = response_ai.text.strip() if response_ai.text else ""
+
+    # Save to session transcript
+    entry = {"question": user_question, "answer": coach_reply}
+    transcript.append(entry)
+    session.transcript = json.dumps(transcript)
+    await db.commit()
+
+    return QAsubmitResponse(question=user_question, answer=coach_reply)
+
+
+@app.post("/interview/{interview_id}/finish-qa", response_model=QAfinishResponse)
+async def finish_qa(
+    interview_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(InterviewSession).where(
+            InterviewSession.id == interview_id,
+            InterviewSession.user_id == current_user.id,
+        )
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    transcript = json.loads(session.transcript)
+    if not transcript:
+        feedback_summary = "Session ended without any conversation."
+    else:
+        history_text = "\n".join(
+            f"User: {t['question']}\nCoach: {t['answer']}" for t in transcript
+        )
+        prompt = f"{QA_SUMMARY_PROMPT}\n\nHistory:\n{history_text}"
+        response_ai = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+        )
+        feedback_summary = response_ai.text.strip() if response_ai.text else "Failed to generate session summary."
+
+    session.feedback = feedback_summary
+    session.score = "Q&A"
+    session.status = "completed"
+    await db.commit()
+
+    return QAfinishResponse(feedback=feedback_summary)
+
+
+@app.post("/interview/start-practice")
+async def start_practice(
+    req: PracticeStartRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+
+    session = InterviewSession(
+        user_id=current_user.id,
+        questions=json.dumps([req.question]),
+        transcript="[]",
+        status="in_progress",
+    )
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+    return {"id": session.id}
+
+
+@app.post("/interview/{interview_id}/practice-submit", response_model=PracticeSubmitResponse)
+@limiter.limit("10/minute")
+async def practice_submit(
+    request: Request,
+    interview_id: int,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(InterviewSession).where(
+            InterviewSession.id == interview_id,
+            InterviewSession.user_id == current_user.id,
+        )
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.status == "completed":
+        raise HTTPException(status_code=400, detail="This practice is already completed")
+
+    questions = json.loads(session.questions)
+    if not questions:
+        raise HTTPException(status_code=400, detail="No question is defined for this practice")
+    question = questions[0]
+
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="No audio data received")
+    mime_type = file.content_type or "audio/webm"
+
+    # Transcribe user's audio answer using Gemini
+    response_transcribe = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[
+            types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+            TRANSCRIBE_PROMPT,
+        ],
+    )
+    user_answer = response_transcribe.text.strip() if response_transcribe.text else ""
+    if not user_answer:
+        raise HTTPException(status_code=400, detail="Could not transcribe audio. Please speak clearly.")
+
+    # Send answer and question for evaluation using Gemini
+    prompt = PRACTICE_RATING_PROMPT.format(question=question, answer=user_answer)
+    response_ai = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+        config={"response_mime_type": "application/json"},
+    )
+
+    try:
+        eval_data = json.loads(response_ai.text)
+        score = eval_data["score"]
+        feedback = eval_data["feedback"]
+    except (json.JSONDecodeError, TypeError, KeyError):
+        raise HTTPException(status_code=502, detail="AI returned invalid evaluation data, please try again")
+
+    # Update database
+    session.transcript = json.dumps([{"question": question, "answer": user_answer}])
+    session.score = score
+    session.feedback = feedback
+    session.status = "completed"
+    await db.commit()
+
+    return PracticeSubmitResponse(
+        transcribed_answer=user_answer,
+        score=score,
+        feedback=feedback,
+    )
+
+
+# ──────────────────────────────────────────────────────────────
+# Voice Assistant (Gemini-Live-style hands-free mock interview)
+# ──────────────────────────────────────────────────────────────
+
+@app.post("/interview/start-assistant")
+async def start_assistant(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Start a new hands-free voice assistant interview session."""
+    # Generate the AI's opening greeting + first question
+    opening_prompt = (
+        f"{ASSISTANT_SYSTEM_PROMPT}\n\n"
+        "Conversation history: (none — this is the start)\n\n"
+        "Greet the candidate warmly and ask your first interview question."
+    )
+    response_ai = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=opening_prompt,
+    )
+    ai_greeting = response_ai.text.strip() if response_ai.text else (
+        "Hello! Welcome to your mock interview. Let's get started. "
+        "Tell me about yourself and what role you're targeting."
+    )
+
+    session = InterviewSession(
+        user_id=current_user.id,
+        questions=json.dumps(["Voice Assistant Interview"]),
+        transcript=json.dumps([{"role": "ai", "text": ai_greeting}]),
+        status="in_progress",
+    )
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+
+    return {"id": session.id, "greeting": ai_greeting}
+
+
+@app.post("/interview/{interview_id}/assistant-chat", response_model=AssistantChatResponse)
+@limiter.limit("15/minute")
+async def assistant_chat(
+    request: Request,
+    interview_id: int,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Process one turn: transcribe user audio, generate AI follow-up."""
+    result = await db.execute(
+        select(InterviewSession).where(
+            InterviewSession.id == interview_id,
+            InterviewSession.user_id == current_user.id,
+        )
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.status == "completed":
+        raise HTTPException(status_code=400, detail="This session is already completed")
+
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="No audio data received")
+    mime_type = file.content_type or "audio/webm"
+
+    # 1. Transcribe the candidate's spoken answer
+    response_transcribe = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[
+            types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+            TRANSCRIBE_PROMPT,
+        ],
+    )
+    user_text = response_transcribe.text.strip() if response_transcribe.text else ""
+    if not user_text:
+        raise HTTPException(status_code=400, detail="Could not transcribe audio. Please speak clearly.")
+
+    # 2. Build conversation history for context
+    transcript = json.loads(session.transcript)
+    transcript.append({"role": "user", "text": user_text})
+
+    history_lines = []
+    for turn in transcript:
+        prefix = "Interviewer" if turn["role"] == "ai" else "Candidate"
+        history_lines.append(f"{prefix}: {turn['text']}")
+    history_text = "\n".join(history_lines)
+
+    # 3. Generate AI follow-up question
+    prompt = (
+        f"{ASSISTANT_SYSTEM_PROMPT}\n\n"
+        f"Conversation history:\n{history_text}\n\n"
+        "Briefly acknowledge the candidate's last answer, then ask your next interview question."
+    )
+    response_ai = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+    )
+    ai_reply = response_ai.text.strip() if response_ai.text else "Interesting. Can you elaborate on that?"
+
+    # 4. Persist updated transcript
+    transcript.append({"role": "ai", "text": ai_reply})
+    session.transcript = json.dumps(transcript)
+    await db.commit()
+
+    return AssistantChatResponse(transcribed_input=user_text, ai_response=ai_reply)
+
+
+@app.post("/interview/{interview_id}/assistant-finish", response_model=AssistantFinishResponse)
+async def assistant_finish(
+    interview_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """End the voice assistant session and generate a final score + feedback."""
+    result = await db.execute(
+        select(InterviewSession).where(
+            InterviewSession.id == interview_id,
+            InterviewSession.user_id == current_user.id,
+        )
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    transcript = json.loads(session.transcript)
+    if len(transcript) < 2:
+        session.score = "0/10"
+        session.feedback = "Session ended before any conversation took place."
+        session.status = "completed"
+        await db.commit()
+        return AssistantFinishResponse(score="0/10", feedback=session.feedback)
+
+    history_lines = []
+    for turn in transcript:
+        prefix = "Interviewer" if turn["role"] == "ai" else "Candidate"
+        history_lines.append(f"{prefix}: {turn['text']}")
+    history_text = "\n".join(history_lines)
+
+    eval_prompt = f"{ASSISTANT_EVAL_PROMPT}{history_text}"
+    response_ai = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=eval_prompt,
+        config={"response_mime_type": "application/json"},
+    )
+
+    try:
+        eval_data = json.loads(response_ai.text)
+        score = eval_data["score"]
+        feedback = eval_data["feedback"]
+    except (json.JSONDecodeError, TypeError, KeyError):
+        score = "N/A"
+        feedback = response_ai.text if response_ai.text else "Could not generate evaluation."
+
+    session.score = score
+    session.feedback = feedback
+    session.status = "completed"
+    await db.commit()
+
+    return AssistantFinishResponse(score=score, feedback=feedback)

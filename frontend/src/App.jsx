@@ -1,12 +1,11 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+﻿import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import Chat from "./pages/Chat";
-
-function ProtectedRoute({ children }) {
-  const token = localStorage.getItem("token");
-  return token ? children : <Navigate to="/login" />;
-}
+import Resume from "./pages/Resume";
+import ResumeBuilder from "./pages/ResumeBuilder";
+import MindMap from "./pages/MindMap";
+import Interviewer from "./pages/Interviewer";
 
 function App() {
   return (
@@ -15,14 +14,11 @@ function App() {
         <Route path="/" element={<Navigate to="/login" />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
-        <Route
-          path="/chat"
-          element={
-            <ProtectedRoute>
-              <Chat />
-            </ProtectedRoute>
-          }
-        />
+        <Route path="/chat" element={<Chat />} />
+        <Route path="/resume" element={<Resume />} />
+        <Route path="/resume-builder" element={<ResumeBuilder />} />
+        <Route path="/mind-map" element={<MindMap />} />
+        <Route path="/interview" element={<Interviewer />} />
       </Routes>
     </BrowserRouter>
   );
